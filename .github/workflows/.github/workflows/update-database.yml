@@ -1,0 +1,43 @@
+name: Update TPL Database
+
+on:
+  repository_dispatch:
+    types: [nova-transacao]
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: tpl-database-update
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.APP_ACCESS_TOKEN }}
+
+      - name: Ensure database.json exists
+        run: |
+          if [ ! -f database.json ]; then
+            echo "[]" > database.json
+          fi
+
+      - name: Update database.json
+        run: |
+          NOVA_TRANSACAO='${{ github.event.client_payload.transaction }}'
+          jq --argjson newTx "$NOVA_TRANSACAO" '. += [$newTx]' database.json > temp_db.json
+          mv temp_db.json database.json
+
+      - name: Commit and Push changes
+        run: |
+          git config --global user.name 'TPL Data Robot'
+          git config --global user.email 'actions@github.com'
+          git add database.json
+          if ! git diff --staged --quiet; then
+            git commit -m "chore: Adiciona nova transação via Action"
+            git push
+          else
+            echo "Nenhuma alteração para commitar."
+          fi
