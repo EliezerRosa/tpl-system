@@ -1,0 +1,32 @@
+name: Setup Admin Access Token
+
+on:
+  repository_dispatch:
+    types: [setup-admin-token]
+
+permissions:
+  contents: write
+
+jobs:
+  get-token:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Exchange code for token
+        id: exchange
+        run: |
+          CODE="${{ github.event.client_payload.code }}"
+          CLIENT_ID="${{ secrets.OAUTH_CLIENT_ID }}"
+          CLIENT_SECRET="${{ secrets.OAUTH_CLIENT_SECRET }}"
+          RESPONSE=$(curl -X POST -H "Accept: application/json" \
+            "https://github.com/login/oauth/access_token" \
+            -d "client_id=$CLIENT_ID" \
+            -d "client_secret=$CLIENT_SECRET" \
+            -d "code=$CODE")
+          echo "ACCESS_TOKEN=$(echo $RESPONSE | jq -r .access_token)" >> $GITHUB_ENV
+
+      - name: Save token as a repository secret
+        uses: hmanstr/actions-create-secret@v2.0.0
+        with:
+          name: 'APP_ACCESS_TOKEN'
+          value: ${{ env.ACCESS_TOKEN }}
+          token: ${{ secrets.ADMIN_PAT }}
