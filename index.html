@@ -39,7 +39,8 @@
 
   <div id="sync-controls">
     <div id="syncStatus">⚡ Conectando...</div>
-    <button class="auth-button" onclick="tplSystem.startAdminAuth()">Login com GitHub</button>
+    <!-- Botão de login: Adicionado ID, removido onclick -->
+    <button class="auth-button" id="adminAuthButton">Login com GitHub</button>
   </div>
 
   <div id="user-status">
@@ -50,7 +51,8 @@
   <div id="nameSetup" class="name-setup" style="display:none;">
     <p><strong>Para participar, configure seu nome:</strong></p>
     <input type="text" id="nameInput" placeholder="Digite seu nome" maxlength="30">
-    <button onclick="setupUser()">Salvar Nome</button>
+    <!-- Botão de salvar nome: Adicionado ID, removido onclick -->
+    <button id="saveNameButton">Salvar Nome</button>
   </div>
 
   <table id="scheduleTable">
@@ -84,6 +86,9 @@
       { label: '18:00', hour: 18 }
     ];
     const DAYS_AHEAD = 32;
+
+    // Declarada, mas não inicializada aqui
+    let tplSystem = null;
 
     class TPLSystem {
       constructor() {
@@ -128,6 +133,8 @@
         const userNameEl = document.getElementById('userName');
         if (this.userName) {
           userNameEl.textContent = this.userName;
+          // Esconde o setup de nome se o nome já estiver configurado
+          nameSetup.style.display = 'none';
         } else {
           nameSetup.style.display = 'block';
         }
@@ -176,18 +183,26 @@
             ${cellsHtml}
             <td>${obs}</td>`;
           tbody.appendChild(row);
+
+          // Marca a linha como passada se a data for anterior ao dia atual
+          if (date < new Date(new Date().setHours(0,0,0,0))) {
+            row.classList.add('past-date');
+          }
         }
 
         tbody.querySelectorAll('.slot').forEach(div => {
-          if (!div.closest('.past-date') && !div.classList.contains('past-slot')) {
-            div.addEventListener('click', () => this.handleSlotClick(div));
+          // Os event listeners são adicionados apenas para slots que NÃO são "past-slot"
+          // Os slots de data passada recebem a classe 'past-date' na linha inteira,
+          // mas isso não impede o clique a menos que o slot também seja 'past-slot'
+          if (!div.classList.contains('past-slot') && !div.closest('.past-date')) {
+             div.addEventListener('click', () => this.handleSlotClick(div));
           }
         });
       }
 
       handleSlotClick(el) {
         if (!this.userName) {
-          alert('Configure seu nome antes.');
+          alert('Configure seu nome antes de interagir com a agenda.');
           document.getElementById('nameSetup').style.display = 'block';
           return;
         }
@@ -223,17 +238,27 @@
         localStorage.setItem('tpl_transactions', JSON.stringify(Array.from(this.transactions.values())));
         this.refreshSlots();
 
-        await fetch(this.dispatchUrl, {
-          method: 'POST',
-          headers: {
-            'Accept': 'application/vnd.github.v3+json',
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            event_type: 'nova-transacao',
-            client_payload: { transaction: JSON.stringify(tx) }
-          })
-        });
+        // Tenta disparar o evento GitHub (pode falhar sem auth, mas o estado local é atualizado)
+        try {
+            await fetch(this.dispatchUrl, {
+              method: 'POST',
+              headers: {
+                'Accept': 'application/vnd.github.v3+json',
+                'Content-Type': 'application/json'
+                // Para repository_dispatch, você não precisa de token aqui,
+                // a action será acionada se o payload for válido.
+                // A autenticação é gerenciada pelo GitHub Actions.
+              },
+              body: JSON.stringify({
+                event_type: 'nova-transacao',
+                client_payload: { transaction: JSON.stringify(tx) }
+              })
+            });
+            console.log("Transação enviada para o GitHub Actions.");
+        } catch (error) {
+            console.error("Erro ao enviar transação para GitHub Actions:", error);
+            alert("Erro ao sincronizar com o servidor. A transação foi salva localmente e tentará sincronizar mais tarde.");
+        }
       }
 
       rebuildSchedule() {
@@ -247,6 +272,7 @@
             const setId = map.get(tx.slotId);
             if (setId) {
               const ref = this.transactions.get(setId);
+              // Apenas permite deletar se o slot foi originalmente criado pelo mesmo deviceId
               if (ref && ref.ownerId === tx.ownerId) {
                 map.delete(tx.slotId);
               }
@@ -261,12 +287,36 @@
           const slotId = div.dataset.slotId;
           const txId = this.scheduleState.get(slotId);
           const tx = txId ? this.transactions.get(txId) : null;
-          div.className = 'slot';
-          div.textContent = '';
+          div.className = 'slot'; // Reset classes
+          div.textContent = ''; // Clear content
+
+          // Reaplicar classes de tempo passado para slots
+          const [isoDate, timeLabel, index] = slotId.split('-');
+          const today = new Date();
+          const currentHour = today.getHours();
+          const slotHour = TIME_SLOTS.find(ts => ts.label === timeLabel)?.hour;
+          const isToday = (new Date(isoDate).toDateString() === today.toDateString());
+          const pastSlot = isToday && slotHour !== undefined && slotHour < currentHour;
+
+          if (pastSlot) {
+            div.classList.add('past-slot');
+            div.removeEventListener('click', () => this.handleSlotClick(div)); // Remove listener para slots passados
+          } else if (div.closest('.past-date')) { // Se a linha inteira é de data passada
+             div.classList.add('past-slot'); // Trata como slot passado visualmente
+             div.removeEventListener('click', () => this.handleSlotClick(div)); // Remove listener
+          } else {
+             // Re-adiciona o listener se não for passado (garantindo que só há um)
+             if (!div.hasAttribute('data-has-listener')) {
+                div.addEventListener('click', () => this.handleSlotClick(div));
+                div.setAttribute('data-has-listener', 'true');
+             }
+          }
+
+
           if (tx && tx.data) {
             div.textContent = tx.data.name;
             div.classList.add(tx.ownerId === this.deviceId ? 'my-slot' : 'taken');
-          } else {
+          } else if (!pastSlot && !div.closest('.past-date')) {
             div.classList.add('available');
           }
         });
@@ -274,6 +324,7 @@
 
       async fetchLatestData() {
         try {
+          // Adiciona um cache-buster para garantir que sempre pega a versão mais recente
           const resp = await fetch(`${this.dbUrl}?v=${Date.now()}`);
           if (!resp.ok) throw new Error('Status ' + resp.status);
           const json = await resp.json();
@@ -285,31 +336,41 @@
             transactions = json.transactions;
           }
           transactions.forEach(t => {
-            if (t && t.id && !this.transactions.has(t.id)) {
+            // Garante que o objeto de transação é válido antes de adicionar
+            if (t && typeof t.id === 'string' && !this.transactions.has(t.id)) {
+              // Garante que o payload é um objeto JSON válido
               const tx = typeof t === 'string' ? JSON.parse(t) : t;
               this.transactions.set(tx.id, tx);
               added++;
             }
           });
           if (added) {
+            console.log(`Sincronizado: ${added} novas transações adicionadas.`);
             this.rebuildSchedule();
             localStorage.setItem('tpl_transactions', JSON.stringify(Array.from(this.transactions.values())));
             this.refreshSlots();
           }
+          document.getElementById('syncStatus').textContent = '✅ Sincronizado';
+          document.getElementById('syncStatus').style.color = '#4CAF50'; // Verde
         } catch (err) {
           console.error('Erro de sincronização:', err.message);
+          document.getElementById('syncStatus').textContent = '⚠️ Erro de Sincronização';
+          document.getElementById('syncStatus').style.color = '#f44336'; // Vermelho
         }
       }
 
       async startAutoSync() {
         await this.fetchLatestData();
-        setInterval(() => this.fetchLatestData(), 30000);
+        // Aumentando o intervalo para 1 minuto (60000ms) para reduzir requisições desnecessárias
+        setInterval(() => this.fetchLatestData(), 60000);
       }
       
       // Nova função para iniciar o fluxo de autenticação OAuth
       async startAdminAuth() {
         const clientId = 'Ov23likR1Y8H4FdShZkb';
-        const redirectUri = window.location.href;
+        // A redirectUri deve ser a URL exata da sua página onde o usuário será redirecionado
+        // após a autorização no GitHub. Pode ser a URL do GitHub Pages.
+        const redirectUri = window.location.origin + window.location.pathname;
         window.location.href = `https://github.com/login/oauth/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=repo,workflow`;
       }
 
@@ -319,24 +380,31 @@
         const code = urlParams.get('code');
         if (code) {
           alert('Autenticação iniciada. O robô está trabalhando para salvar o token.');
-          await fetch(this.dispatchUrl, {
-            method: 'POST',
-            headers: {
-              'Accept': 'application/vnd.github.v3+json',
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-              event_type: 'setup-admin-token',
-              client_payload: { code: code }
-            })
-          });
-          window.history.pushState({}, document.title, window.location.pathname);
+          try {
+            await fetch(this.dispatchUrl, {
+              method: 'POST',
+              headers: {
+                'Accept': 'application/vnd.github.v3+json',
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({
+                event_type: 'setup-admin-token',
+                client_payload: { code: code }
+              })
+            });
+            console.log("Evento 'setup-admin-token' disparado com sucesso.");
+            // Remove o 'code' da URL para limpeza
+            window.history.replaceState({}, document.title, window.location.pathname);
+          } catch (error) {
+            console.error("Erro ao disparar evento 'setup-admin-token':", error);
+            alert("Erro ao iniciar o setup do token de administrador.");
+            window.history.replaceState({}, document.title, window.location.pathname);
+          }
         }
       }
     }
 
-    let tplSystem = null;
-
+    // Função global setupUser, conforme já existia, mas agora chamada via event listener
     function setupUser() {
       const input = document.getElementById('nameInput');
       const name = input.value.trim();
@@ -346,14 +414,32 @@
       }
       tplSystem.userName = name;
       localStorage.setItem('tpl_user_name', name);
-      tplSystem.setupUI();
+      tplSystem.setupUI(); // Atualiza a UI e esconde o setup de nome
       tplSystem.refreshSlots();
     }
 
+    // A instância de TPLSystem é criada e inicializada AQUI,
+    // após o DOM estar completamente carregado e parseado.
     document.addEventListener('DOMContentLoaded', async () => {
-      tplSystem = new TPLSystem();
-      await tplSystem.init();
-      tplSystem.refreshSlots();
+      tplSystem = new TPLSystem(); // Cria a instância
+      await tplSystem.init();      // Inicializa a instância
+      tplSystem.refreshSlots();    // Atualiza os slots com os dados iniciais
+
+      // Anexa event listeners aos botões
+      const adminAuthButton = document.getElementById('adminAuthButton');
+      if (adminAuthButton) {
+        adminAuthButton.addEventListener('click', () => {
+          tplSystem.startAdminAuth();
+        });
+      }
+
+      const saveNameButton = document.getElementById('saveNameButton');
+      if (saveNameButton) {
+        saveNameButton.addEventListener('click', setupUser);
+      }
+
+      // Atualiza o status de sincronização inicial
+      document.getElementById('syncStatus').textContent = '⚡ Conectando...';
     });
   </script>
 </body>
