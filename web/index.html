@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Cadastro RVM - Participantes</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <h1>Cadastro de Participantes - Reunião Vida e Ministério</h1>
+      <p class="subtitle">
+        Gerencie classificações, status e objetivos com armazenamento local no navegador.
+      </p>
+    </header>
+
+    <main class="layout">
+      <section class="panel" aria-labelledby="cadastro-heading">
+        <h2 id="cadastro-heading">Cadastrar participante</h2>
+        <form id="participant-form" class="form-grid">
+          <label>
+            Nome
+            <input id="name" name="name" type="text" required placeholder="Ex.: João Silva" />
+          </label>
+
+          <label>
+            Classificação
+            <select id="classification" name="classification" required>
+              <option value="">Selecione</option>
+            </select>
+          </label>
+
+          <fieldset class="fieldset">
+            <legend>Objetivos</legend>
+            <div id="objectives-options" class="checklist"></div>
+          </fieldset>
+
+          <label>
+            Status de participação
+            <select id="status" name="status" required>
+              <option value="">Selecione</option>
+            </select>
+          </label>
+
+          <label>
+            Observações
+            <textarea id="notes" name="notes" rows="3" placeholder="Ex.: prefere auxiliar nas leituras"></textarea>
+          </label>
+
+          <button type="submit" class="primary">Adicionar ao cadastro</button>
+        </form>
+      </section>
+
+      <section class="panel" aria-labelledby="listas-heading">
+        <h2 id="listas-heading">Listas por objetivo</h2>
+        <div id="objective-lists" class="objective-lists" aria-live="polite"></div>
+      </section>
+
+      <section class="panel" aria-labelledby="ajustes-heading">
+        <h2 id="ajustes-heading">Ajustes da programação</h2>
+        <form id="adjustment-form" class="form-grid compact">
+          <label>
+            Data do evento
+            <input id="event-date" name="eventDate" type="date" required />
+          </label>
+
+          <label>
+            Objetivo
+            <select id="event-objective" name="eventObjective" required>
+              <option value="">Selecione</option>
+            </select>
+          </label>
+
+          <label>
+            Quantidade necessária
+            <input id="event-required" name="required" type="number" min="1" value="1" required />
+          </label>
+
+          <label class="wide">
+            Observações / demanda especial
+            <input
+              id="event-special"
+              name="specialDemand"
+              type="text"
+              placeholder="Ex.: Precisa de auxiliar extra para assembleia especial"
+            />
+          </label>
+
+          <button type="submit" class="secondary">Gerar recomendações</button>
+        </form>
+
+        <div id="adjustment-results" class="results" aria-live="polite"></div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <small>
+        Dados armazenados localmente em seu navegador. Exporte as listas para backup em breve.
+      </small>
+    </footer>
+
+    <script type="module" src="scripts/main.js"></script>
+  </body>
+</html>

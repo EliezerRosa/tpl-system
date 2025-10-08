@@ -1,0 +1,11 @@
+{
+  "name": "rvm-participants-web",
+  "version": "0.1.0",
+  "description": "Módulo web para cadastro e gerenciamento de participantes da Reunião Vida e Ministério (RVM) com armazenamento local.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test web/tests"
+  },
+  "author": "",
+  "license": "MIT"
+}
