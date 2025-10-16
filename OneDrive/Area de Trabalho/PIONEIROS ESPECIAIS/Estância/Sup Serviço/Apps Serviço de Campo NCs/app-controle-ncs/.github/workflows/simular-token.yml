@@ -1,0 +1,58 @@
+name: Simular Token PAT
+
+on:
+  workflow_dispatch:
+  repository_dispatch:
+    types:
+      - app-first-access
+
+jobs:
+  token-simulation:
+    name: Simular geração e uso de token
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configurar ambiente
+        run: |
+          echo "# Etapa 1: Configuração do ambiente"
+          echo "Configurando variáveis e contexto para o app-cliente."
+          echo "Simulação iniciada às $(date)."
+
+      - name: Simular geração de token fictício
+        id: gerar_token
+        run: |
+          echo "# Etapa 2: Gerando token fictício"
+          echo "Simulando chamada de API que devolve um PAT..."
+          echo "token_gerado_aqui" > token.txt
+          echo "TOKEN_SIMULADO=token_gerado_aqui" >> $GITHUB_ENV
+          echo "Token fictício registrado em arquivo temporário."
+
+      - name: Armazenar token como variável de ambiente
+        run: |
+          echo "# Etapa 3: Armazenando token em $GITHUB_ENV"
+          echo "TOKEN_EXPORTADO=token_gerado_aqui" >> $GITHUB_ENV
+          echo "Token disponível nas próximas etapas."
+
+      - name: Simular armazenamento seguro (GitHub Secrets)
+        env:
+          TOKEN_SIMULADO: ${{ env.TOKEN_SIMULADO }}
+        run: |
+          echo "# Etapa 4: Simulando gravação em Secrets"
+          echo "Simulando armazenamento do token em GitHub Secrets"
+          echo "::add-mask::$TOKEN_SIMULADO"
+          echo "# Comentário: Em produção, o token seria criado via UI/API de administração."
+          echo "TOKEN_SECRET_SIMULADO=$TOKEN_SIMULADO" > token_secret.txt
+          echo "Token mascarado e armazenado em arquivo seguro (simulação)."
+
+      - name: Usar token em chamada fictícia de API
+        env:
+          TOKEN_SIMULADO: ${{ env.TOKEN_SIMULADO }}
+        run: |
+          echo "# Etapa 5: Consumindo API com token"
+          echo "curl -H \"Authorization: token $TOKEN_SIMULADO\" https://api.github.com/user"
+          echo "gh api /user --header \"Authorization: token $TOKEN_SIMULADO\""
+          echo "# Comentário: acima temos chamadas fictícias apenas para demonstrar o uso."
+
+      - name: Notificar usuário
+        run: |
+          echo "# Etapa 6: Notificação final"
+          echo "Token simulado gerado, armazenado e utilizado com sucesso."
