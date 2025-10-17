@@ -61,6 +61,70 @@ interface AppData {
   territories: Record<string, TerritoryRecord>;
 }
 
+interface TokenArtifact {
+  version: number;
+  issuedAt: string;
+  charSet: string;
+  fragmentSize: number;
+  payload: string[];
+  checksum: string;
+}
+
+const computeChecksum = (input: string) =>
+  [...input].reduce((accumulator, char, index) => accumulator + char.charCodeAt(0) * (index + 1), 0).toString(16);
+
+const encodeTokenArtifact = (token: string): TokenArtifact => {
+  // Reverte e codifica o PAT para remover qualquer rastro de texto plano antes de fracionar.
+  const reversed = token.split('').reverse().join('');
+  const base64Payload = btoa(reversed);
+  const fragments = base64Payload.match(new RegExp(`.{1,${TOKEN_FRAGMENT_SIZE}}`, 'g')) ?? [];
+  const payload = fragments.map((fragment, index) => {
+    const prefix = TOKEN_CHARSET[index % TOKEN_CHARSET.length];
+    const suffix = TOKEN_CHARSET[(index + 3) % TOKEN_CHARSET.length];
+    return `${prefix}${fragment}${suffix}`;
+  });
+
+  return {
+    version: 1,
+    issuedAt: new Date().toISOString(),
+    charSet: TOKEN_CHARSET,
+    fragmentSize: TOKEN_FRAGMENT_SIZE,
+    payload,
+    checksum: computeChecksum(base64Payload),
+  };
+};
+
+const decodeTokenArtifact = (artifact: TokenArtifact | null): string | null => {
+  if (!artifact || !Array.isArray(artifact.payload) || artifact.payload.length === 0) {
+    return null;
+  }
+
+  if (artifact.charSet !== TOKEN_CHARSET) {
+    return null;
+  }
+
+  try {
+    // Remove o caractere sentinela de cada extremidade e reconstrói a string base64 original.
+    const base64Payload = artifact.payload
+      .map((entry) => (entry.length > 2 ? entry.slice(1, -1) : ''))
+      .join('');
+
+    if (!base64Payload) {
+      return null;
+    }
+
+    if (computeChecksum(base64Payload) !== artifact.checksum) {
+      return null;
+    }
+
+    const reversed = atob(base64Payload);
+    return reversed.split('').reverse().join('');
+  } catch (error) {
+    console.warn('Falha ao decodificar o token distribuído:', error);
+    return null;
+  }
+};
+
 const REPO_OWNER = 'EliezerRosa';
 const REPO_NAME = 'ControleDeTerrorio';
 const FILE_PATH = 'data/db.yml';
@@ -68,6 +132,10 @@ const COMMIT_MESSAGE = 'Dados atualizados pelo App de Territórios';
 const PAT_STORAGE_KEY = 'territoryAppPat';
 const POLL_INTERVAL_MS = 30000;
 const WORKFLOW_DISPATCH_KEY = 'territoryAppWorkflowDispatched';
+const TOKEN_FILE_PATH = 'public/token.json';
+const TOKEN_FRAGMENT_SIZE = 5;
+const TOKEN_CHARSET = 'ncs-app-secure';
+const TOKEN_COMMIT_MESSAGE = 'Token distribuído para GitHub Pages';
 
 const roleHierarchy: Record<UserRole, number> = {
   Comum: 0,
@@ -112,8 +180,8 @@ const cloneState = <T,>(data: T) => JSON.parse(JSON.stringify(data)) as T;
 const hasCapability = (role: UserRole, required: UserRole) =>
   roleHierarchy[role] >= roleHierarchy[required];
 
-const githubContentUrl = () =>
-  `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/contents/${FILE_PATH}`;
+const githubContentUrl = (path = FILE_PATH) =>
+  `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/contents/${path}`;
 
 const recalcBlockSummary = (block: BlockRecord) => {
   const summary = {
@@ -259,6 +327,99 @@ const AppControleNcs: React.FC = () => {
     setNotification(payload);
   }, []);
 
+  const upsertFileInRepo = useCallback(
+    async ({
+      path,
+      rawContent,
+      message,
+      authToken,
+    }: {
+      path: string;
+      rawContent: string;
+      message: string;
+      authToken?: string;
+    }) => {
+      const tokenToUse = authToken ?? patValue;
+      if (!tokenToUse) {
+        throw new Error('PAT não configurado para envio de arquivo.');
+      }
+
+      const targetUrl = githubContentUrl(path);
+      let sha: string | undefined;
+
+      try {
+        const currentResponse = await fetch(targetUrl, {
+          headers: {
+            Authorization: `Bearer ${tokenToUse}`,
+            Accept: 'application/vnd.github+json',
+          },
+        });
+
+        if (currentResponse.status === 200) {
+          const payload = await currentResponse.json();
+          sha = payload.sha;
+        } else if (currentResponse.status !== 404) {
+          throw new Error(`Falha ao consultar ${path} (${currentResponse.status})`);
+        }
+      } catch (error) {
+        throw new Error(
+          `Falha ao preparar atualização do arquivo ${path}: ${(error as Error).message}`,
+        );
+      }
+
+      const putResponse = await fetch(targetUrl, {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${tokenToUse}`,
+          'Content-Type': 'application/json',
+          Accept: 'application/vnd.github+json',
+        },
+        body: JSON.stringify({
+          message,
+          content: encodeBase64(rawContent),
+          ...(sha ? { sha } : {}),
+        }),
+      });
+
+      if (!putResponse.ok) {
+        throw new Error(`Erro ao atualizar ${path} (${putResponse.status})`);
+      }
+    },
+    [patValue],
+  );
+
+  const distributeTokenToPages = useCallback(
+    async (token: string) => {
+      if (!token) return;
+
+      try {
+        const artifact = encodeTokenArtifact(token);
+        const payload = JSON.stringify(artifact, null, 2);
+
+        // Publica o artefato ofuscado no repositório, permitindo que outros navegadores reconstruam o PAT.
+        await upsertFileInRepo({
+          path: TOKEN_FILE_PATH,
+          rawContent: payload,
+          message: TOKEN_COMMIT_MESSAGE,
+          authToken: token,
+        });
+
+        surfaceNotification({
+          type: 'success',
+          message: 'Token publicado com sucesso no GitHub Pages',
+        });
+      } catch (error) {
+        console.warn('Não foi possível publicar o token distribuído:', error);
+        surfaceNotification({
+          type: 'error',
+          message:
+            'PAT salvo localmente, mas a publicação no GitHub Pages falhou. Verifique permissões.',
+        });
+      }
+    },
+    [surfaceNotification, upsertFileInRepo],
+  );
+
   const loadRemoteState = useCallback(
     async (reason: 'initial' | 'manual' | 'polling' | 'focus' | 'post-commit' | 'retry') => {
       setIsLoading(true);
@@ -338,34 +499,12 @@ const AppControleNcs: React.FC = () => {
           lineWidth: -1,
         });
 
-        const shaResponse = await fetch(githubContentUrl(), {
-          headers: { Authorization: `Bearer ${patValue}` },
-        });
-
-        if (!shaResponse.ok) {
-          throw new Error(`Erro ao obter SHA (${shaResponse.status})`);
-        }
-
-        const shaPayload = await shaResponse.json();
-
-        const commitBody = {
+        await upsertFileInRepo({
+          path: FILE_PATH,
+          rawContent: yamlString,
           message: COMMIT_MESSAGE,
-          content: encodeBase64(yamlString),
-          sha: shaPayload.sha,
-        };
-
-        const putResponse = await fetch(githubContentUrl(), {
-          method: 'PUT',
-          headers: {
-            Authorization: `Bearer ${patValue}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(commitBody),
+          authToken: patValue,
         });
-
-        if (!putResponse.ok) {
-          throw new Error(`Erro ao confirmar commit (${putResponse.status})`);
-        }
 
         surfaceNotification({ type: 'success', message: 'Commit aplicado com sucesso' });
         await loadRemoteState('post-commit');
@@ -379,7 +518,7 @@ const AppControleNcs: React.FC = () => {
         setIsSaving(false);
       }
     },
-    [ensurePatBeforeCommit, loadRemoteState, patValue, surfaceNotification],
+    [ensurePatBeforeCommit, loadRemoteState, patValue, surfaceNotification, upsertFileInRepo],
   );
 
   const applyStateMutation = useCallback(
@@ -396,6 +535,45 @@ const AppControleNcs: React.FC = () => {
   useEffect(() => {
     void loadRemoteState('initial');
   }, [loadRemoteState]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (patValue) return;
+
+    let cancelled = false;
+
+    const attemptTokenRecovery = async () => {
+      try {
+        const response = await fetch('/token.json', { cache: 'no-store' });
+        if (!response.ok) {
+          throw new Error('Artefato de token indisponível.');
+        }
+
+        const artifact = (await response.json()) as TokenArtifact;
+        const reconstructed = decodeTokenArtifact(artifact);
+
+        if (!reconstructed) {
+          throw new Error('Artefato de token inválido.');
+        }
+
+        localStorage.setItem(PAT_STORAGE_KEY, reconstructed);
+        if (!cancelled) {
+          setPatValue(reconstructed);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          // Requisita o modal para que o primeiro usuário cadastre o PAT manualmente.
+          setShowPatModal(true);
+        }
+      }
+    };
+
+    void attemptTokenRecovery();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [patValue]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -695,13 +873,15 @@ const AppControleNcs: React.FC = () => {
   const handlePatSubmit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault();
-      const value = patValue.trim();
-      if (!value) return;
-      persistPat(value);
+      const formData = new FormData(event.currentTarget);
+      const rawToken = String(formData.get('pat-token') ?? patValue ?? '').trim();
+      if (!rawToken) return;
+      persistPat(rawToken);
       setShowPatModal(false);
       surfaceNotification({ type: 'success', message: 'PAT salvo localmente' });
+      void distributeTokenToPages(rawToken);
     },
-    [patValue, persistPat, surfaceNotification],
+    [distributeTokenToPages, patValue, persistPat, surfaceNotification],
   );
 
   const handleUserModalSubmit = useCallback(
@@ -1161,6 +1341,7 @@ const AppControleNcs: React.FC = () => {
             </p>
             <TextInput
               label="Token (PAT)"
+              name="pat-token"
               value={patValue}
               onChange={(event) => setPatValue(event.target.value)}
               required
