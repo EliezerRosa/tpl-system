@@ -1,6 +1,11 @@
 import { readFile } from 'fs/promises';
 import path from 'path';
 
+/**
+ * Atualização: gere um novo PAT, salve-o em public/token.json com o app e execute este script para publicar o artefato ofuscado.
+ * Revogação: remova o PAT em github.com/settings/tokens, zere public/token.json (payload [] e checksum null) e rode novamente o script.
+ */
+
 const token = process.env.GITHUB_TOKEN || process.env.PAT || process.argv[2];
 
 if (!token) {

@@ -136,6 +136,8 @@ const TOKEN_FILE_PATH = 'public/token.json';
 const TOKEN_FRAGMENT_SIZE = 5;
 const TOKEN_CHARSET = 'ncs-app-secure';
 const TOKEN_COMMIT_MESSAGE = 'Token distribuído para GitHub Pages';
+const IS_DEV_BUILD = (import.meta.env?.DEV ?? false) as boolean;
+const TOKEN_ARTIFACT_URL = `${import.meta.env.BASE_URL ?? '/'}token.json`;
 
 const roleHierarchy: Record<UserRole, number> = {
   Comum: 0,
@@ -177,8 +179,8 @@ const decodeBase64 = (payload: string) => {
 
 const cloneState = <T,>(data: T) => JSON.parse(JSON.stringify(data)) as T;
 
-const hasCapability = (role: UserRole, required: UserRole) =>
-  roleHierarchy[role] >= roleHierarchy[required];
+const hasCapability = (role: UserRole | null, required: UserRole) =>
+  role ? roleHierarchy[role] >= roleHierarchy[required] : false;
 
 const githubContentUrl = (path = FILE_PATH) =>
   `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/contents/${path}`;
@@ -327,6 +329,34 @@ const AppControleNcs: React.FC = () => {
     setNotification(payload);
   }, []);
 
+  // Revogação: remova o PAT ativo em github.com/settings/tokens e publique um token.json vazio (payload [] e checksum null) com o script scripts/publish-token.mjs.
+  // Atualização: gere um novo PAT, forneça-o via modal ou script e publique novamente o artefato ofuscado; a função abaixo reaproveita a leitura de token.json para reconectar navegadores limpos.
+  const recoverTokenArtifact = useCallback(async ({ silent = false }: { silent?: boolean } = {}) => {
+    if (typeof window === 'undefined') return false;
+
+    try {
+      const response = await fetch(TOKEN_ARTIFACT_URL, { cache: 'no-store' });
+      if (!response.ok) {
+        throw new Error('Artefato de token indisponível.');
+      }
+
+      const artifact = (await response.json()) as TokenArtifact;
+      const reconstructed = decodeTokenArtifact(artifact);
+
+      if (!reconstructed) {
+        throw new Error('Artefato de token inválido.');
+      }
+
+      localStorage.setItem(PAT_STORAGE_KEY, reconstructed);
+      setPatValue(reconstructed);
+      return true;
+    } catch (error) {
+      const prefix = silent ? 'Revalidação silenciosa do token falhou:' : 'Revalidação do token distribuído falhou:';
+      console.warn(prefix, error);
+      return false;
+    }
+  }, []);
+
   const upsertFileInRepo = useCallback(
     async ({
       path,
@@ -419,6 +449,32 @@ const AppControleNcs: React.FC = () => {
     },
     [surfaceNotification, upsertFileInRepo],
   );
+
+  const handleForceTokenRevalidation = useCallback(async () => {
+    if (typeof window === 'undefined') return;
+
+    localStorage.removeItem(PAT_STORAGE_KEY);
+    localStorage.removeItem(WORKFLOW_DISPATCH_KEY);
+    setPatValue('');
+    setShowPatModal(false);
+
+    surfaceNotification({ type: 'info', message: 'Revalidando token distribuído...' });
+
+    const success = await recoverTokenArtifact({ silent: true });
+    if (success) {
+      surfaceNotification({
+        type: 'success',
+        message: 'Token reconstruído a partir do GitHub Pages.',
+      });
+      return;
+    }
+
+    surfaceNotification({
+      type: 'error',
+      message: 'Revalidação automática falhou. Informe o PAT manualmente.',
+    });
+    setShowPatModal(true);
+  }, [recoverTokenArtifact, surfaceNotification]);
 
   const loadRemoteState = useCallback(
     async (reason: 'initial' | 'manual' | 'polling' | 'focus' | 'post-commit' | 'retry') => {
@@ -543,28 +599,10 @@ const AppControleNcs: React.FC = () => {
     let cancelled = false;
 
     const attemptTokenRecovery = async () => {
-      try {
-        const response = await fetch('/token.json', { cache: 'no-store' });
-        if (!response.ok) {
-          throw new Error('Artefato de token indisponível.');
-        }
-
-        const artifact = (await response.json()) as TokenArtifact;
-        const reconstructed = decodeTokenArtifact(artifact);
-
-        if (!reconstructed) {
-          throw new Error('Artefato de token inválido.');
-        }
-
-        localStorage.setItem(PAT_STORAGE_KEY, reconstructed);
-        if (!cancelled) {
-          setPatValue(reconstructed);
-        }
-      } catch (error) {
-        if (!cancelled) {
-          // Requisita o modal para que o primeiro usuário cadastre o PAT manualmente.
-          setShowPatModal(true);
-        }
+      const success = await recoverTokenArtifact({ silent: true });
+      if (!success && !cancelled) {
+        // Requisita o modal para que o primeiro usuário cadastre o PAT manualmente.
+        setShowPatModal(true);
       }
     };
 
@@ -573,7 +611,7 @@ const AppControleNcs: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [patValue]);
+  }, [patValue, recoverTokenArtifact]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -1005,6 +1043,16 @@ const AppControleNcs: React.FC = () => {
               <RefreshCcw className="h-4 w-4" />
               Sincronizar
             </button>
+            {(IS_DEV_BUILD || hasCapability(userRole, 'Admin')) && (
+              <button
+                onClick={() => void handleForceTokenRevalidation()}
+                className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-sm hover:bg-slate-50"
+                title="Limpa o navegador e reconstrói o PAT a partir do GitHub Pages."
+              >
+                <ShieldCheck className="h-4 w-4" />
+                Revalidar PAT
+              </button>
+            )}
             {hasCapability(userRole, 'Super Admin') && (
               <button
                 onClick={() => setShowPatModal(true)}
